@@ -125,7 +125,10 @@ class SiteStore {
         const adminEmail = process.env.ADMIN_EMAIL || 'eabn8@bnmenu.local';
         const adminPassword = process.env.ADMIN_PASSWORD || 'admchora';
 
-        const adminIndex = users.findIndex((user) => user.role === 'admin');
+        const adminIndex = users.findIndex((user) => {
+            return normalizeUsername(user.username) === normalizeUsername(adminUsername)
+                || normalizeEmail(user.email) === normalizeEmail(adminEmail);
+        });
         if (adminIndex >= 0) {
             const currentAdmin = users[adminIndex];
             users[adminIndex] = {
@@ -133,7 +136,9 @@ class SiteStore {
                 username: currentAdmin.username || adminUsername,
                 displayName: currentAdmin.displayName || 'Administrador',
                 email: normalizeEmail(adminEmail),
+                role: 'admin',
                 provider: currentAdmin.provider || 'local',
+                passwordHash: currentAdmin.passwordHash || hashPassword(adminPassword),
                 lastLoginAt: currentAdmin.lastLoginAt || null,
                 loginCount: currentAdmin.loginCount || 0
             };
@@ -306,6 +311,46 @@ class SiteStore {
             });
     }
 
+    updateUserRole(userId, role) {
+        const normalizedRole = String(role || '').trim().toLowerCase();
+        if (!['admin', 'user'].includes(normalizedRole)) {
+            throw new Error('Cargo invalido.');
+        }
+
+        const users = readJson(USERS_FILE, []);
+        const userIndex = users.findIndex((user) => user.id === userId);
+        if (userIndex < 0) {
+            throw new Error('Conta nao encontrada.');
+        }
+
+        const currentUser = users[userIndex];
+        if (currentUser.role === normalizedRole) {
+            return sanitizeUser(currentUser);
+        }
+
+        if (currentUser.role === 'admin' && normalizedRole !== 'admin') {
+            const adminCount = users.filter((user) => user.role === 'admin').length;
+            if (adminCount <= 1) {
+                throw new Error('Nao e possivel remover o ultimo admin.');
+            }
+        }
+
+        const updatedUser = {
+            ...currentUser,
+            role: normalizedRole
+        };
+        users[userIndex] = updatedUser;
+        writeJson(USERS_FILE, users);
+
+        this.sendWebhook('Cargo alterado no portal', [
+            `Usuario: ${updatedUser.username}`,
+            `Email: ${updatedUser.email}`,
+            `Novo cargo: ${updatedUser.role}`
+        ]);
+
+        return sanitizeUser(updatedUser);
+    }
+
     listActivity() {
         return readJson(ACTIVITY_FILE, []);
     }
@@ -325,6 +370,7 @@ class SiteStore {
             playerUserId: activity.playerUserId || '-',
             gameName: String(activity.gameName || '').trim() || '-',
             executor: String(activity.executor || '').trim() || '-',
+            hwid: String(activity.hwid || '').trim() || '-',
             hwidMasked: maskIdentifier(activity.hwid)
         };
 
