@@ -69,6 +69,10 @@ function createKeyValue(type) {
     return `${prefix}-${random}`;
 }
 
+function normalizeCustomKey(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
 function buildKeyData(type) {
     return {
         type,
@@ -195,9 +199,28 @@ class JsonStorage {
         };
     }
 
-    async createKeys(type, quantity) {
+    async createKeys(type, quantity, options = {}) {
         const keys = readJsonKeys();
         const createdKeys = [];
+        const customKey = normalizeCustomKey(options.customKey);
+
+        if (customKey) {
+            if (quantity !== 1) {
+                throw new Error('Key customizada so pode ser criada com quantidade 1.');
+            }
+
+            if (!/^[a-z0-9_-]{3,64}$/.test(customKey)) {
+                throw new Error('A key customizada deve ter 3 a 64 caracteres usando letras, numeros, "_" ou "-".');
+            }
+
+            if (keys[customKey]) {
+                throw new Error('Essa key customizada ja existe.');
+            }
+
+            keys[customKey] = buildKeyData(type);
+            writeJsonKeys(keys);
+            return [customKey];
+        }
 
         for (let index = 0; index < quantity; index += 1) {
             let key = createKeyValue(type);
@@ -446,12 +469,57 @@ class PostgresStorage {
         }
     }
 
-    async createKeys(type, quantity) {
+    async createKeys(type, quantity, options = {}) {
         const client = await this.pool.connect();
         const createdKeys = [];
+        const customKey = normalizeCustomKey(options.customKey);
 
         try {
             await client.query('BEGIN');
+
+            if (customKey) {
+                if (quantity !== 1) {
+                    throw new Error('Key customizada so pode ser criada com quantidade 1.');
+                }
+
+                if (!/^[a-z0-9_-]{3,64}$/.test(customKey)) {
+                    throw new Error('A key customizada deve ter 3 a 64 caracteres usando letras, numeros, "_" ou "-".');
+                }
+
+                const data = buildKeyData(type);
+                const result = await client.query(
+                    `
+                        INSERT INTO bn_menu_keys (
+                            license_key,
+                            key_type,
+                            created_at,
+                            user_id,
+                            active,
+                            devices,
+                            max_devices
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+                        ON CONFLICT (license_key) DO NOTHING
+                        RETURNING license_key
+                    `,
+                    [
+                        customKey,
+                        data.type,
+                        data.created,
+                        data.user,
+                        data.active,
+                        JSON.stringify(data.devices),
+                        data.maxDevices
+                    ]
+                );
+
+                if (result.rowCount === 0) {
+                    throw new Error('Essa key customizada ja existe.');
+                }
+
+                await client.query('COMMIT');
+                return [customKey];
+            }
 
             for (let index = 0; index < quantity; index += 1) {
                 let inserted = false;
