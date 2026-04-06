@@ -39,6 +39,21 @@ function normalizeUsername(username) {
     return String(username || '').trim().toLowerCase();
 }
 
+function createUsernameFromEmail(email, users) {
+    const base = normalizeUsername(normalizeEmail(email).split('@')[0])
+        .replace(/[^a-z0-9_-]/g, '')
+        .slice(0, 20) || 'user';
+    let candidate = base;
+    let counter = 1;
+
+    while (users.some((user) => normalizeUsername(user.username) === candidate)) {
+        counter += 1;
+        candidate = `${base}${counter}`.slice(0, 24);
+    }
+
+    return candidate;
+}
+
 function base64UrlEncode(value) {
     return Buffer.from(value).toString('base64url');
 }
@@ -107,11 +122,22 @@ class SiteStore {
     ensureAdminUser() {
         const users = readJson(USERS_FILE, []);
         const adminUsername = process.env.ADMIN_USERNAME || 'eabn8';
-        const adminEmail = process.env.ADMIN_EMAIL || 'admin@bnmenu.local';
+        const adminEmail = process.env.ADMIN_EMAIL || 'eabn8@bnmenu.local';
         const adminPassword = process.env.ADMIN_PASSWORD || 'admchora';
 
-        const hasAdmin = users.some((user) => user.role === 'admin');
-        if (hasAdmin) {
+        const adminIndex = users.findIndex((user) => user.role === 'admin');
+        if (adminIndex >= 0) {
+            const currentAdmin = users[adminIndex];
+            users[adminIndex] = {
+                ...currentAdmin,
+                username: currentAdmin.username || adminUsername,
+                displayName: currentAdmin.displayName || 'Administrador',
+                email: normalizeEmail(adminEmail),
+                provider: currentAdmin.provider || 'local',
+                lastLoginAt: currentAdmin.lastLoginAt || null,
+                loginCount: currentAdmin.loginCount || 0
+            };
+            writeJson(USERS_FILE, users);
             return;
         }
 
@@ -191,13 +217,15 @@ class SiteStore {
     }
 
     registerLocalUser({ username, displayName, email, password }) {
-        const normalizedUsername = normalizeUsername(username);
         const normalizedEmail = normalizeEmail(email);
-        const safeDisplayName = String(displayName || '').trim() || normalizedUsername;
         const users = readJson(USERS_FILE, []);
+        const normalizedUsername = normalizeUsername(username) || createUsernameFromEmail(normalizedEmail, users);
+        const safeDisplayName = String(displayName || '').trim()
+            || normalizedUsername
+            || normalizedEmail.split('@')[0];
 
-        if (!normalizedUsername || !normalizedEmail || !password) {
-            throw new Error('Preencha usuario, email e senha.');
+        if (!normalizedEmail || !password) {
+            throw new Error('Preencha email e senha.');
         }
 
         if (users.some((user) => normalizeUsername(user.username) === normalizedUsername)) {
@@ -280,6 +308,10 @@ class SiteStore {
 
     listActivity() {
         return readJson(ACTIVITY_FILE, []);
+    }
+
+    clearActivity() {
+        writeJson(ACTIVITY_FILE, []);
     }
 
     recordScriptActivity(activity) {
