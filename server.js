@@ -61,10 +61,10 @@ function requireAdmin(req, res, next) {
 app.post('/api/auth/register', asyncHandler(async (req, res) => {
     const { username, displayName, email, password, confirmPassword } = req.body;
 
-    if (!username || !email || !password || !confirmPassword) {
+    if (!email || !password || !confirmPassword) {
         return res.status(400).json({
             success: false,
-            message: 'Preencha usuario, email, senha e confirmacao.'
+            message: 'Preencha email, senha e confirmacao.'
         });
     }
 
@@ -164,7 +164,7 @@ app.get('/api/keys', requireAuth, requireAdmin, asyncHandler(async (req, res) =>
 }));
 
 app.post('/api/keys/create', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
-    const { type, quantity } = req.body;
+    const { type, quantity, customKey } = req.body;
     const normalizedType = String(type || '').trim().toLowerCase();
     const count = Number.parseInt(quantity, 10) || 1;
 
@@ -189,7 +189,7 @@ app.post('/api/keys/create', requireAuth, requireAdmin, asyncHandler(async (req,
         });
     }
 
-    const createdKeys = await storage.createKeys(normalizedType, count);
+    const createdKeys = await storage.createKeys(normalizedType, count, { customKey });
 
     return res.json({
         success: true,
@@ -263,6 +263,14 @@ app.get('/api/admin/activity', requireAuth, requireAdmin, asyncHandler(async (re
     });
 }));
 
+app.delete('/api/admin/activity', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    siteStore.clearActivity();
+    return res.json({
+        success: true,
+        message: 'Historico de atividade apagado com sucesso!'
+    });
+}));
+
 app.get('/api/admin/users', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
     return res.json({
         success: true,
@@ -299,7 +307,7 @@ app.post('/api/admin/webhook/test', requireAuth, requireAdmin, asyncHandler(asyn
 app.get('/', (req, res) => {
     res.json({
         message: 'BN MENU API - Online!',
-        version: '2.1.0',
+        version: '2.2.0',
         storage: storage.getMode(),
         auth: 'enabled',
         endpoints: {
@@ -315,6 +323,7 @@ app.get('/', (req, res) => {
             deleteByType: 'DELETE /api/keys/type/:type',
             stats: 'GET /api/stats',
             activity: 'GET /api/admin/activity',
+            clearActivity: 'DELETE /api/admin/activity',
             users: 'GET /api/admin/users'
         }
     });
