@@ -3,6 +3,7 @@ const path = require('path');
 const { Pool } = require('pg');
 
 const DATA_FILE = path.join(__dirname, 'keys.json');
+const BLACKLIST_FILE = path.join(__dirname, 'hwid-blacklist.json');
 const VALID_KEY_TYPES = ['daily', 'weekly', 'monthly', 'lifetime', 'dev'];
 
 const TYPE_NAMES = {
@@ -38,6 +39,12 @@ function ensureJsonFile() {
     }
 }
 
+function ensureBlacklistFile() {
+    if (!fs.existsSync(BLACKLIST_FILE)) {
+        fs.writeFileSync(BLACKLIST_FILE, JSON.stringify([], null, 2));
+    }
+}
+
 function readJsonKeys() {
     ensureJsonFile();
 
@@ -50,6 +57,21 @@ function readJsonKeys() {
 
 function writeJsonKeys(keys) {
     fs.writeFileSync(DATA_FILE, JSON.stringify(keys, null, 2));
+}
+
+function readJsonBlacklist() {
+    ensureBlacklistFile();
+
+    try {
+        const raw = JSON.parse(fs.readFileSync(BLACKLIST_FILE, 'utf8'));
+        return Array.isArray(raw) ? raw : [];
+    } catch (error) {
+        return [];
+    }
+}
+
+function writeJsonBlacklist(entries) {
+    fs.writeFileSync(BLACKLIST_FILE, JSON.stringify(entries, null, 2));
 }
 
 function mapRowToKey(row) {
@@ -71,6 +93,10 @@ function createKeyValue(type) {
 
 function normalizeCustomKey(value) {
     return String(value || '').trim().toLowerCase();
+}
+
+function normalizeHwid(value) {
+    return String(value || '').trim();
 }
 
 function buildKeyData(type) {
@@ -130,6 +156,14 @@ function computeStats(keysById) {
     };
 }
 
+function buildBlacklistEntry(hwid, reason = '') {
+    return {
+        hwid: normalizeHwid(hwid),
+        reason: String(reason || '').trim(),
+        createdAt: new Date().toISOString()
+    };
+}
+
 class JsonStorage {
     getMode() {
         return 'json';
@@ -137,13 +171,60 @@ class JsonStorage {
 
     async init() {
         ensureJsonFile();
+        ensureBlacklistFile();
     }
 
     async listKeys() {
         return readJsonKeys();
     }
 
+    async listBlacklistedHwids() {
+        return readJsonBlacklist();
+    }
+
+    async addBlacklistedHwid(hwid, reason = '') {
+        const normalizedHwid = normalizeHwid(hwid);
+        if (!normalizedHwid) {
+            throw new Error('Informe um HWID valido.');
+        }
+
+        const entries = readJsonBlacklist();
+        if (entries.some((entry) => entry.hwid === normalizedHwid)) {
+            throw new Error('Esse HWID ja esta na blacklist.');
+        }
+
+        const nextEntry = buildBlacklistEntry(normalizedHwid, reason);
+        entries.unshift(nextEntry);
+        writeJsonBlacklist(entries);
+        return nextEntry;
+    }
+
+    async removeBlacklistedHwid(hwid) {
+        const normalizedHwid = normalizeHwid(hwid);
+        const entries = readJsonBlacklist();
+        const nextEntries = entries.filter((entry) => entry.hwid !== normalizedHwid);
+
+        if (nextEntries.length === entries.length) {
+            return false;
+        }
+
+        writeJsonBlacklist(nextEntries);
+        return true;
+    }
+
     async validateKey(key, hwid) {
+        const normalizedHwid = normalizeHwid(hwid);
+        const blacklisted = readJsonBlacklist().find((entry) => entry.hwid === normalizedHwid);
+        if (blacklisted) {
+            return {
+                statusCode: 403,
+                body: {
+                    success: false,
+                    message: 'Este HWID esta na blacklist!'
+                }
+            };
+        }
+
         const keys = readJsonKeys();
         const keyData = keys[key];
 
@@ -175,7 +256,7 @@ class JsonStorage {
         const devices = keyData.devices || [];
         const maxDevices = keyData.maxDevices || 1;
 
-        if (!devices.includes(hwid)) {
+        if (!devices.includes(normalizedHwid)) {
             if (devices.length >= maxDevices) {
                 return {
                     statusCode: 403,
@@ -186,9 +267,9 @@ class JsonStorage {
                 };
             }
 
-            devices.push(hwid);
+            devices.push(normalizedHwid);
             keyData.devices = devices;
-            keyData.user = hwid;
+            keyData.user = normalizedHwid;
             keys[key] = keyData;
             writeJsonKeys(keys);
         }
@@ -311,6 +392,14 @@ class PostgresStorage {
             )
         `);
 
+        await this.pool.query(`
+            CREATE TABLE IF NOT EXISTS bn_menu_hwid_blacklist (
+                hwid TEXT PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL
+            )
+        `);
+
         await this.migrateFromJsonIfNeeded();
     }
 
@@ -383,11 +472,78 @@ class PostgresStorage {
         return keys;
     }
 
+    async listBlacklistedHwids() {
+        const result = await this.pool.query(`
+            SELECT hwid, reason, created_at
+            FROM bn_menu_hwid_blacklist
+            ORDER BY created_at DESC
+        `);
+
+        return result.rows.map((row) => ({
+            hwid: row.hwid,
+            reason: row.reason,
+            createdAt: new Date(row.created_at).toISOString()
+        }));
+    }
+
+    async addBlacklistedHwid(hwid, reason = '') {
+        const normalizedHwid = normalizeHwid(hwid);
+        if (!normalizedHwid) {
+            throw new Error('Informe um HWID valido.');
+        }
+
+        const entry = buildBlacklistEntry(normalizedHwid, reason);
+        const result = await this.pool.query(
+            `
+                INSERT INTO bn_menu_hwid_blacklist (hwid, reason, created_at)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (hwid) DO NOTHING
+                RETURNING hwid, reason, created_at
+            `,
+            [entry.hwid, entry.reason, entry.createdAt]
+        );
+
+        if (result.rowCount === 0) {
+            throw new Error('Esse HWID ja esta na blacklist.');
+        }
+
+        return {
+            hwid: result.rows[0].hwid,
+            reason: result.rows[0].reason,
+            createdAt: new Date(result.rows[0].created_at).toISOString()
+        };
+    }
+
+    async removeBlacklistedHwid(hwid) {
+        const result = await this.pool.query(
+            'DELETE FROM bn_menu_hwid_blacklist WHERE hwid = $1',
+            [normalizeHwid(hwid)]
+        );
+        return result.rowCount === 1;
+    }
+
     async validateKey(key, hwid) {
         const client = await this.pool.connect();
+        const normalizedHwid = normalizeHwid(hwid);
 
         try {
             await client.query('BEGIN');
+
+            const blacklistResult = await client.query(
+                'SELECT hwid FROM bn_menu_hwid_blacklist WHERE hwid = $1',
+                [normalizedHwid]
+            );
+
+            if (blacklistResult.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return {
+                    statusCode: 403,
+                    body: {
+                        success: false,
+                        message: 'Este HWID esta na blacklist!'
+                    }
+                };
+            }
 
             const result = await client.query(
                 `
@@ -430,7 +586,7 @@ class PostgresStorage {
             const devices = keyData.devices || [];
             const maxDevices = keyData.maxDevices || 1;
 
-            if (!devices.includes(hwid)) {
+            if (!devices.includes(normalizedHwid)) {
                 if (devices.length >= maxDevices) {
                     await client.query('ROLLBACK');
                     return {
@@ -442,9 +598,9 @@ class PostgresStorage {
                     };
                 }
 
-                devices.push(hwid);
+                devices.push(normalizedHwid);
                 keyData.devices = devices;
-                keyData.user = hwid;
+                keyData.user = normalizedHwid;
 
                 await client.query(
                     `
@@ -452,7 +608,7 @@ class PostgresStorage {
                         SET devices = $2::jsonb, user_id = $3
                         WHERE license_key = $1
                     `,
-                    [key, JSON.stringify(devices), hwid]
+                    [key, JSON.stringify(devices), normalizedHwid]
                 );
             }
 
