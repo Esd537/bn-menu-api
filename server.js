@@ -278,6 +278,46 @@ app.get('/api/admin/users', requireAuth, requireAdmin, asyncHandler(async (req, 
     });
 }));
 
+app.post('/api/admin/users/:id/role', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    const updatedUser = siteStore.updateUserRole(req.params.id, req.body.role);
+    return res.json({
+        success: true,
+        message: 'Cargo atualizado com sucesso!',
+        data: updatedUser
+    });
+}));
+
+app.get('/api/admin/blacklist', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    return res.json({
+        success: true,
+        data: await storage.listBlacklistedHwids()
+    });
+}));
+
+app.post('/api/admin/blacklist', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    const entry = await storage.addBlacklistedHwid(req.body.hwid, req.body.reason);
+    return res.json({
+        success: true,
+        message: 'HWID adicionado na blacklist!',
+        data: entry
+    });
+}));
+
+app.delete('/api/admin/blacklist/:hwid', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
+    const removed = await storage.removeBlacklistedHwid(req.params.hwid);
+    if (!removed) {
+        return res.status(404).json({
+            success: false,
+            message: 'HWID nao encontrado na blacklist.'
+        });
+    }
+
+    return res.json({
+        success: true,
+        message: 'HWID removido da blacklist!'
+    });
+}));
+
 app.get('/api/admin/webhook', requireAuth, requireAdmin, asyncHandler(async (req, res) => {
     return res.json({
         success: true,
@@ -307,7 +347,7 @@ app.post('/api/admin/webhook/test', requireAuth, requireAdmin, asyncHandler(asyn
 app.get('/', (req, res) => {
     res.json({
         message: 'BN MENU API - Online!',
-        version: '2.2.0',
+        version: '2.3.0',
         storage: storage.getMode(),
         auth: 'enabled',
         endpoints: {
@@ -324,7 +364,11 @@ app.get('/', (req, res) => {
             stats: 'GET /api/stats',
             activity: 'GET /api/admin/activity',
             clearActivity: 'DELETE /api/admin/activity',
-            users: 'GET /api/admin/users'
+            users: 'GET /api/admin/users',
+            userRole: 'POST /api/admin/users/:id/role',
+            blacklist: 'GET /api/admin/blacklist',
+            addBlacklist: 'POST /api/admin/blacklist',
+            removeBlacklist: 'DELETE /api/admin/blacklist/:hwid'
         }
     });
 });
